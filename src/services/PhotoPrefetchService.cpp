@@ -40,6 +40,24 @@ void PhotoPrefetchService::clearFiles() {
   }
 }
 
+void PhotoPrefetchService::stop() {
+  if (!_running && !_ready) return;
+  
+  Serial.println("Stopping prefetch service...");
+  
+  // Mark as not running - the task will exit on next check
+  _running = false;
+  _ready = false;
+  
+  // Clean up any partial downloads
+  clearFiles();
+  
+  // Give the task time to finish
+  delay(100);
+  
+  Serial.println("Prefetch service stopped");
+}
+
 void PhotoPrefetchService::taskEntry(void* arg) {
   static_cast<PhotoPrefetchService*>(arg)->taskBody();
   vTaskDelete(nullptr);

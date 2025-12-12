@@ -38,5 +38,9 @@ namespace DisplayUI {
   void showBanner(const String& line1, const String& line2);
   void clearBanner();
 
+  // Idle warning display
+  void showIdleWarning(uint32_t secondsRemaining);
+  void clearIdleWarning();
+
   void refreshRect(const Rect& r);
 }

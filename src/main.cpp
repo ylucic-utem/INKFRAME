@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <SD.h>
+#include <esp_sleep.h>
 
 #include "config.h"
 
@@ -38,8 +39,35 @@ static PhotoInfo currentPhoto;
 static uint32_t imageChangeCount = 0;
 static bool qualityModeEnabled = false;
 
+// Power management state
+static bool timerWakeMode = false;  // True if woken by timer (vs user interaction)
+static uint32_t lastIdleWarningSecond = 0;
+
 static void fetchAndShowNextPhoto();
 static bool showLastPhotoOnBoot();
+static void enterIdleSleep();
+
+// Helper to enter idle/deep sleep with proper cleanup
+static void enterIdleSleep() {
+  Serial.println("Entering idle sleep transition...");
+  
+  // Stop prefetch service
+  prefetchService.stop();
+  
+  // Disconnect WiFi
+  WifiService::disconnect(true);
+  
+  // Determine wake interval based on battery level
+  uint32_t wakeInterval = DEEP_SLEEP_WAKE_INTERVAL_SECONDS;
+  const int batt = PowerService::batteryPercent();
+  if (batt >= 0 && batt < BATTERY_CRITICAL_PERCENT) {
+    wakeInterval = LOW_BATTERY_WAKE_INTERVAL_SECONDS;
+    Serial.printf("Low battery (%d%%), using extended wake interval\n", batt);
+  }
+  
+  // Enter deep sleep with splash
+  PowerService::enterDeepSleep(wakeInterval, SHOW_SPLASH_ON_SLEEP);
+}
 
 
 void setup() {
@@ -56,6 +84,25 @@ void setup() {
   
   Serial.println("\n\nM5Stack PaperS3 Photo Viewer Starting...");
 
+  // Check wake cause early
+  PowerService::WakeCause wakeCause = PowerService::getWakeCause();
+  Serial.print("Wake cause: ");
+  switch (wakeCause) {
+    case PowerService::WakeCause::Timer:
+      Serial.println("TIMER");
+      timerWakeMode = true;
+      break;
+    case PowerService::WakeCause::Touch:
+      Serial.println("TOUCH");
+      break;
+    case PowerService::WakeCause::Button:
+      Serial.println("BUTTON");
+      break;
+    default:
+      Serial.println("POWER_ON");
+      break;
+  }
+
   if (!sdCard.begin()) {
     Serial.println("ERROR: SD Card mount failed!");
     delay(600);
@@ -67,8 +114,22 @@ void setup() {
   Serial.print("Connecting to WiFi SSID: ");
   Serial.println(SSID);
   const bool wifiOk = WifiService::connect(SSID, PASSWORD, WIFI_TIMEOUT_MS);
+
+  // If timer wake mode, do background update and return to sleep
+  if (timerWakeMode) {
+    Serial.println("Timer wake: fetching new photo and returning to sleep");
+    if (wifiOk) {
+      // Try to show last photo first for quick display update
+      showLastPhotoOnBoot();
+      // Fetch a new photo
+      fetchAndShowNextPhoto();
+    }
+    // Return to sleep
+    enterIdleSleep();
+    return;  // Never reached, but for clarity
+  }
   
-  // Show splash (will download from URL if first boot and WiFi is connected).
+  // Normal boot: Show splash (will download from URL if first boot and WiFi is connected).
   SplashService::showBootSplash(String(APP_NAME));
 
   // Try to show the last downloaded image quickly.
@@ -79,7 +140,7 @@ void setup() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("\nFailed to connect to WiFi");
-    // Keep splash visible; we’ll proceed offline if possible.
+    // Keep splash visible; we'll proceed offline if possible.
   }
 
   // Prefetch next image in the background so "Next" is instant.
@@ -99,21 +160,74 @@ void setup() {
     DisplayUI::drawTaskbar(currentPhoto.title, qualityModeEnabled);
     DisplayUI::refreshRect(DisplayUI::taskbarRect());
   }
+  
+  // Initialize activity tracking
+  PowerService::recordActivity();
+  Serial.println("Activity tracking initialized");
 }
 
 void loop() {
   M5.update();
 
+  // Check idle timeout BEFORE processing input
+  const uint32_t idleTime = PowerService::getIdleTime();
+  const uint32_t timeToSleep = (idleTime < IDLE_TIMEOUT_MS) ? (IDLE_TIMEOUT_MS - idleTime) : 0;
+  const uint32_t secondsToSleep = timeToSleep / 1000;
+  
+  // Show idle warning in last 30 seconds
+  if (secondsToSleep <= IDLE_WARNING_SECONDS && secondsToSleep > 0) {
+    // Only update display when seconds change
+    if (secondsToSleep != lastIdleWarningSecond) {
+      lastIdleWarningSecond = secondsToSleep;
+      DisplayUI::showIdleWarning(secondsToSleep);
+    }
+  } else if (lastIdleWarningSecond != 0) {
+    // Clear warning if user interacted
+    DisplayUI::clearIdleWarning();
+    lastIdleWarningSecond = 0;
+  }
+  
+  // Check if idle timeout exceeded
+  if (PowerService::checkIdleTimeout() && !PowerService::isIdle()) {
+    Serial.println("Idle timeout reached - entering sleep");
+    PowerService::setIdleState(true);
+    enterIdleSleep();
+    return;  // Never reached
+  }
+  
+  // Proactive WiFi disconnect when approaching idle
+  if (WifiService::shouldDisconnectForIdle()) {
+    Serial.println("WiFi idle disconnect");
+    WifiService::disconnect(false);  // Keep radio on for quick reconnect
+  }
+
   switch (inputHandler.poll()) {
     case InputHandler::Action::Next:
       Serial.println("NEXT requested");
+      PowerService::recordActivity();
+      DisplayUI::clearIdleWarning();
+      lastIdleWarningSecond = 0;
+      
+      // Reconnect WiFi if disconnected
+      if (!WifiService::isConnected()) {
+        WifiService::reconnect(WIFI_TIMEOUT_MS);
+      }
+      WifiService::recordWifiUsage();
+      
       fetchAndShowNextPhoto();
       break;
+      
     case InputHandler::Action::Sleep:
-      Serial.println("SLEEP requested");
-      PowerService::enterDeepSleep();
+      Serial.println("SLEEP requested - immediate sleep");
+      PowerService::recordActivity();  // Record to ensure clean state
+      enterIdleSleep();
       break;
+      
     case InputHandler::Action::ToggleQuality: {
+      PowerService::recordActivity();
+      DisplayUI::clearIdleWarning();
+      lastIdleWarningSecond = 0;
+      
       qualityModeEnabled = !qualityModeEnabled;
       Serial.println(String("QUALITY toggled: ") + (qualityModeEnabled ? "ON" : "OFF"));
 
@@ -149,6 +263,9 @@ static void fetchAndShowNextPhoto() {
     return;
   }
 
+  // Record WiFi usage for idle tracking
+  WifiService::recordWifiUsage();
+
   const uint32_t nextIndex = imageChangeCount + 1;
   const bool useQuality = qualityModeEnabled;
 
@@ -156,6 +273,7 @@ static void fetchAndShowNextPhoto() {
   if (prefetchService.tryConsume(prefetched)) {
     Serial.println("Using prefetched photo");
     currentPhoto = prefetched;
+    WifiService::recordWifiUsage();  // Prefetch used WiFi
 
     String renderErr;
     if (imagePipeline.renderPrefetchedPhoto(currentPhoto, useQuality, renderErr)) {
@@ -188,6 +306,8 @@ static void fetchAndShowNextPhoto() {
     }
     return;
   }
+
+  WifiService::recordWifiUsage();  // API call used WiFi
 
   Serial.println("Photo URL: " + currentPhoto.url);
   Serial.println("Title: " + currentPhoto.title);

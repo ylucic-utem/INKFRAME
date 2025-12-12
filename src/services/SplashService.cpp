@@ -208,4 +208,36 @@ void showBootSplash(const String& appName) {
   M5.Display.setEpdMode(epd_mode_t::epd_fastest);
 }
 
+void showQuickSplash() {
+  // Use epd_quality for a clean final image before sleep
+  M5.Display.setEpdMode(epd_mode_t::epd_quality);
+  M5.Display.fillScreen(TFT_WHITE);
+
+#if SPLASH_MODE == 1
+  // Draw 1-bit bitmap splash (fast - from compiled memory)
+  drawBitmap1Bit(splash_bitmap, SPLASH_BITMAP_WIDTH, SPLASH_BITMAP_HEIGHT);
+  M5.Display.display(0, 0, M5.Display.width(), M5.Display.height());
+#elif SPLASH_MODE == 2
+  // Draw JPEG splash from SD card
+  if (!drawJpegFromSD(SPLASH_JPEG_PATH)) {
+    // Fallback to app name
+    M5.Display.setTextColor(TFT_BLACK);
+    M5.Display.setFont(&fonts::Font7);
+    M5.Display.setTextDatum(datum_t::middle_center);
+    M5.Display.drawString(APP_NAME, M5.Display.width() / 2, M5.Display.height() / 2);
+    M5.Display.display(0, 0, M5.Display.width(), M5.Display.height());
+  }
+#else
+  // Draw text splash
+  M5.Display.setTextColor(TFT_BLACK);
+  M5.Display.setFont(&fonts::Font7);
+  M5.Display.setTextDatum(datum_t::middle_center);
+  M5.Display.drawString(APP_NAME, M5.Display.width() / 2, M5.Display.height() / 2);
+  M5.Display.display(0, 0, M5.Display.width(), M5.Display.height());
+#endif
+
+  // Short delay to ensure display completes
+  delay(100);
+}
+
 } // namespace SplashService

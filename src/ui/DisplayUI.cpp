@@ -290,4 +290,62 @@ void drawTaskbar(const String& title, bool qualityEnabled) {
   }
 }
 
+static bool idleWarningVisible = false;
+static uint32_t lastDisplayedSeconds = 0;
+
+void showIdleWarning(uint32_t secondsRemaining) {
+  if (secondsRemaining == 0) {
+    clearIdleWarning();
+    return;
+  }
+  
+  // Only update display when seconds change
+  if (secondsRemaining == lastDisplayedSeconds && idleWarningVisible) {
+    return;
+  }
+  lastDisplayedSeconds = secondsRemaining;
+  
+  // Draw warning in taskbar area
+  const Rect bar = taskbarRect();
+  const int32_t warningX = sleepButtonRect().x + sleepButtonRect().w + 5;
+  const int32_t warningY = bar.y + 10;
+  const int32_t warningW = 130;
+  const int32_t warningH = 16;
+  
+  // Draw sleep countdown
+  M5.Display.setFont(&fonts::Font2);
+  M5.Display.setTextColor(TFT_BLACK);
+  
+  String warning = String("Zzz ") + secondsRemaining + "s";
+  
+  // Clear previous text
+  M5.Display.fillRect(warningX, warningY, warningW, warningH, TFT_WHITE);
+  M5.Display.setCursor(warningX, warningY);
+  M5.Display.print(warning);
+  
+  // Only do a partial refresh when first showing the warning
+  if (!idleWarningVisible) {
+    Rect warnRect = makeRect(warningX, warningY, warningW, warningH);
+    refreshRect(warnRect);
+    idleWarningVisible = true;
+  }
+}
+
+void clearIdleWarning() {
+  if (!idleWarningVisible) return;
+  
+  const Rect bar = taskbarRect();
+  const int32_t warningX = sleepButtonRect().x + sleepButtonRect().w + 5;
+  const int32_t warningY = bar.y + 10;
+  const int32_t warningW = 130;
+  const int32_t warningH = 16;
+  
+  M5.Display.fillRect(warningX, warningY, warningW, warningH, TFT_WHITE);
+  Rect warnRect = makeRect(warningX, warningY, warningW, warningH);
+  refreshRect(warnRect);
+  
+  idleWarningVisible = false;
+  lastDisplayedSeconds = 0;
+}
+
 } // namespace DisplayUI

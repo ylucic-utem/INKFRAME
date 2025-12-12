@@ -86,4 +86,29 @@
 #define HTTP_BUFFER_SIZE 2048  // Buffer size for HTTP downloads
 #define JSON_DOCUMENT_SIZE 4096 // Size for StaticJsonDocument
 
+// ============ Power Management Configuration ============
+// Idle timeout before entering deep sleep (10 minutes = 600,000 ms)
+#define IDLE_TIMEOUT_MS 600000
+
+// Deep sleep wake interval for automatic updates (12 hours = 43200 seconds)
+#define DEEP_SLEEP_WAKE_INTERVAL_SECONDS 43200
+
+// Show splash screen before entering sleep
+#define SHOW_SPLASH_ON_SLEEP true
+
+// Disconnect WiFi when approaching idle (saves power before full sleep)
+#define DISCONNECT_WIFI_ON_IDLE true
+
+// WiFi idle disconnect threshold (2 minutes before going idle)
+#define WIFI_IDLE_DISCONNECT_MS 120000
+
+// Idle warning time (seconds before sleep to show warning)
+#define IDLE_WARNING_SECONDS 30
+
+// Critical battery percentage threshold
+#define BATTERY_CRITICAL_PERCENT 15
+
+// Extended wake interval for low battery (48 hours = 172800 seconds)
+#define LOW_BATTERY_WAKE_INTERVAL_SECONDS 172800
+
 #endif // CONFIG_H

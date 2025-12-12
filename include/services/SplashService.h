@@ -8,4 +8,7 @@ namespace SplashService {
 // This is intended to run once on boot.
 void showBootSplash(const String& appName);
 
+// Quick splash display for sleep transitions (no long delays)
+void showQuickSplash();
+
 } // namespace SplashService

@@ -21,6 +21,9 @@ public:
 
   // Best-effort cleanup of the prefetched files (used after failures).
   void clearFiles();
+  
+  // Safely stop the prefetch task
+  void stop();
 
 private:
   static void taskEntry(void* arg);
