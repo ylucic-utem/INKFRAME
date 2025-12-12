@@ -42,5 +42,9 @@ namespace DisplayUI {
   void showIdleWarning(uint32_t secondsRemaining);
   void clearIdleWarning();
 
+  // Progress bar display (for download/network operations)
+  void showProgress(const String& label, int percentage);
+  void clearProgress();
+
   void refreshRect(const Rect& r);
 }

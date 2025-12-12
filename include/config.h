@@ -14,8 +14,16 @@
 
 // ============ API Configuration ============
 #define PHOTO_API_URL "https://boringapi.com/api/v1/photos/random?num=1"
-#define API_TIMEOUT_MS 30000   // HTTP request timeout in milliseconds
+#define API_TIMEOUT_MS 15000   // HTTP request timeout in milliseconds (reduced from 30s for faster feedback)
 #define PHOTO_BUFFER_SIZE 4096 // JSON buffer size for parsing
+
+// ============ Network Retry Configuration ============
+#define API_RETRY_COUNT 3              // Number of retry attempts for failed requests
+#define API_RETRY_BASE_DELAY_MS 1000   // Initial retry delay in milliseconds (exponential backoff)
+#define API_CONNECTION_TIMEOUT_MS 3000 // TCP connection timeout (fail fast if unreachable)
+
+// ============ Request Prioritization ============
+#define MAX_PENDING_REQUESTS 2         // Skip intermediate requests if queue exceeds this
 
 // ============ Display Configuration ============
 #define DISPLAY_REFRESH_DELAY 100  // Delay between display updates (ms)

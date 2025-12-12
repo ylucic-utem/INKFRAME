@@ -263,6 +263,15 @@ static void fetchAndShowNextPhoto() {
     return;
   }
 
+  // Cancel any in-progress request before starting a new one
+  if (apiClient.isRequestInProgress()) {
+    Serial.println("Cancelling previous request...");
+    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    DisplayUI::showBanner("Cancelling...");
+    apiClient.cancelCurrentRequest();
+    delay(100);  // Brief pause for visual feedback
+  }
+
   // Record WiFi usage for idle tracking
   WifiService::recordWifiUsage();
 
@@ -289,25 +298,62 @@ static void fetchAndShowNextPhoto() {
 
   Serial.println("Fetching photo from API...");
   M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-  DisplayUI::showBanner("Loading...");
+  DisplayUI::showProgress("Loading...", 0);
+
+  // Progress callback for visual feedback
+  auto progressCallback = [](int progress) {
+    DisplayUI::showProgress("Loading...", progress);
+  };
 
   String err;
-  if (!apiClient.fetchRandomPhoto(currentPhoto, err)) {
+  if (!apiClient.fetchRandomPhoto(currentPhoto, err, progressCallback)) {
     Serial.println("API fetch failed: " + err);
+    DisplayUI::clearProgress();
 
-    if (err.startsWith("JSON Parse Error")) {
+    // Log request metadata for diagnostics
+    const RequestMetadata& meta = apiClient.getLastRequestMetadata();
+    Serial.printf("Request #%lu: %s after %lu ms, %d retries, HTTP %d\n",
+                  meta.requestNumber,
+                  meta.cancelled ? "CANCELLED" : "FAILED",
+                  meta.endTime - meta.startTime,
+                  meta.retryCount,
+                  meta.httpCode);
+
+    // Handle specific error categories with appropriate messages
+    if (meta.cancelled) {
+      // Request was cancelled, no error banner needed
+      return;
+    } else if (err.indexOf("Unauthorized") >= 0 || err.indexOf("403") >= 0) {
+      DisplayUI::showBanner("API error", "Check credentials");
+    } else if (err.indexOf("Rate limited") >= 0 || err.indexOf("429") >= 0) {
+      DisplayUI::showBanner("API error", "Rate limited - wait");
+    } else if (err.indexOf("Not found") >= 0 || err.indexOf("404") >= 0) {
+      DisplayUI::showBanner("API error", "Photo not found");
+    } else if (err.startsWith("JSON Parse Error")) {
       DisplayUI::showBanner("API error", "JSON parse");
-    } else if (err.startsWith("HTTP Error")) {
+    } else if (err.startsWith("HTTP Error") || err.indexOf("HTTP") >= 0) {
       DisplayUI::showBanner("API error", err);
     } else if (err.indexOf("No photos") >= 0) {
       DisplayUI::showBanner("API error", "No photos");
+    } else if (err.indexOf("timeout") >= 0 || err.indexOf("Timeout") >= 0) {
+      DisplayUI::showBanner("Network error", "Connection timeout");
+    } else if (err.indexOf("Connection") >= 0) {
+      DisplayUI::showBanner("Network error", err);
     } else {
       DisplayUI::showBanner("API error", err);
     }
     return;
   }
 
+  DisplayUI::clearProgress();
   WifiService::recordWifiUsage();  // API call used WiFi
+
+  // Log successful request metadata
+  const RequestMetadata& meta = apiClient.getLastRequestMetadata();
+  Serial.printf("Request #%lu: SUCCESS in %lu ms, %d retries\n",
+                meta.requestNumber,
+                meta.endTime - meta.startTime,
+                meta.retryCount);
 
   Serial.println("Photo URL: " + currentPhoto.url);
   Serial.println("Title: " + currentPhoto.title);

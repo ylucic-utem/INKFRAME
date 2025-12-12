@@ -348,4 +348,77 @@ void clearIdleWarning() {
   lastDisplayedSeconds = 0;
 }
 
+static bool progressVisible = false;
+static int lastProgressPercent = -1;
+
+void showProgress(const String& label, int percentage) {
+  // Clamp percentage
+  percentage = std::max(0, std::min(100, percentage));
+  
+  // Only redraw if percentage changed significantly (by 5% or more) or first draw
+  if (progressVisible && abs(percentage - lastProgressPercent) < 5) {
+    return;
+  }
+  lastProgressPercent = percentage;
+
+  // Progress bar dimensions - centered in the banner area
+  const Rect r = bannerRect();
+  const int32_t barPadding = 20;
+  const int32_t barHeight = 16;
+  const int32_t labelHeight = 24;
+  const int32_t totalHeight = labelHeight + barHeight + 10;
+  
+  // Clear and draw background
+  M5.Display.fillRect(r.x, r.y, r.w, r.h, TFT_WHITE);
+  M5.Display.drawRect(r.x, r.y, r.w, r.h, TFT_BLACK);
+  
+  // Draw label centered
+  M5.Display.setFont(&fonts::Font2);
+  M5.Display.setTextColor(TFT_BLACK);
+  const auto prevDatum = M5.Display.getTextDatum();
+  M5.Display.setTextDatum(datum_t::top_center);
+  
+  const int32_t cx = r.x + r.w / 2;
+  const int32_t labelY = r.y + (r.h - totalHeight) / 2;
+  M5.Display.drawString(label, cx, labelY);
+  
+  // Draw progress bar outline
+  const int32_t barX = r.x + barPadding;
+  const int32_t barY = labelY + labelHeight + 5;
+  const int32_t barW = r.w - (barPadding * 2);
+  
+  M5.Display.drawRect(barX, barY, barW, barHeight, TFT_BLACK);
+  
+  // Draw filled portion (black fill for progress)
+  const int32_t filledW = (barW - 4) * percentage / 100;
+  if (filledW > 0) {
+    M5.Display.fillRect(barX + 2, barY + 2, filledW, barHeight - 4, TFT_BLACK);
+  }
+  
+  // Draw percentage text at right side of bar
+  String pctText = String(percentage) + "%";
+  M5.Display.setTextDatum(datum_t::middle_right);
+  M5.Display.drawString(pctText, barX + barW - 5, barY + barHeight / 2);
+  
+  M5.Display.setTextDatum(prevDatum);
+  
+  // Only do full refresh on first show
+  if (!progressVisible) {
+    refreshRect(r);
+    progressVisible = true;
+  }
+}
+
+void clearProgress() {
+  if (!progressVisible) return;
+  
+  const Rect r = bannerRect();
+  M5.Display.fillRect(r.x, r.y, r.w, r.h, TFT_WHITE);
+  refreshRect(r);
+  
+  progressVisible = false;
+  lastProgressPercent = -1;
+}
+
 } // namespace DisplayUI
+
