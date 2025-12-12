@@ -7,6 +7,7 @@ public:
   enum class Action {
     None = 0,
     Next,
+    Previous,      // Navigate to previous cached photo
     Sleep,
     ToggleQuality,
   };

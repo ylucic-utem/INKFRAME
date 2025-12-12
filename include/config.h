@@ -86,6 +86,19 @@
 #define SD_SAVE_METADATA true            // Save photo metadata to text files
 #define SD_PHOTO_FILENAME "/photo.jpg"   // Path for the current photo
 
+// ============ Multi-Image Cache Configuration ============
+// Enable multi-image caching for offline browsing
+#define CACHE_ENABLE true
+
+// Cache maintenance interval (run validation during idle time)
+#define CACHE_MAINTENANCE_INTERVAL_MS 60000  // 1 minute
+
+// Preload and validate cache entries during boot
+#define CACHE_PRELOAD_ON_BOOT true
+
+// Cache preload time budget during boot (ms)
+#define CACHE_PRELOAD_BUDGET_MS 500
+
 // ============ Serial/Debug Configuration ============
 #define SERIAL_BAUD_RATE 115200
 #define SERIAL_DEBUG true  // Enable debug messages

@@ -43,9 +43,16 @@ static bool qualityModeEnabled = false;
 static bool timerWakeMode = false;  // True if woken by timer (vs user interaction)
 static uint32_t lastIdleWarningSecond = 0;
 
+// Cache navigation state
+static int16_t currentCachePosition = -1;  // -1 = viewing live/most recent, >=0 = viewing cached history
+static bool offlineModeActive = false;
+
 static void fetchAndShowNextPhoto();
 static bool showLastPhotoOnBoot();
 static void enterIdleSleep();
+static void showCachedPhotoAtPosition(uint8_t position);
+static void updateTaskbarWithCacheInfo();
+static bool checkOfflineMode();
 
 // Helper to enter idle/deep sleep with proper cleanup
 static void enterIdleSleep() {
@@ -53,6 +60,9 @@ static void enterIdleSleep() {
   
   // Stop prefetch service
   prefetchService.stop();
+  
+  // Save cache state before sleeping
+  PhotoCacheService::saveCacheIndex();
   
   // Disconnect WiFi
   WifiService::disconnect(true);
@@ -69,6 +79,72 @@ static void enterIdleSleep() {
   PowerService::enterDeepSleep(wakeInterval, SHOW_SPLASH_ON_SLEEP);
 }
 
+// Check if we should enter offline mode
+static bool checkOfflineMode() {
+  bool wifiConnected = WifiService::isConnected();
+  bool hasCache = PhotoCacheService::hasOfflineContent();
+  
+  if (!wifiConnected && hasCache) {
+    if (!offlineModeActive) {
+      Serial.println("Entering offline mode - WiFi unavailable but cache has photos");
+      offlineModeActive = true;
+      DisplayUI::showOfflineIndicator(true);
+    }
+    return true;
+  }
+  
+  if (wifiConnected && offlineModeActive) {
+    Serial.println("Exiting offline mode - WiFi reconnected");
+    offlineModeActive = false;
+    DisplayUI::showOfflineIndicator(false);
+  }
+  
+  return false;
+}
+
+// Show a cached photo at the given position
+static void showCachedPhotoAtPosition(uint8_t position) {
+  PhotoInfo photo;
+  String imagePath;
+  
+  if (!PhotoCacheService::getFromCache(position, photo, imagePath)) {
+    Serial.printf("Failed to get cached photo at position %d\n", position);
+    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    DisplayUI::showBanner("Cache error", "Photo not found");
+    return;
+  }
+  
+  // Record access for LRU tracking
+  PhotoCacheService::recordAccess(position);
+  
+  Serial.printf("Showing cached photo at position %d: %s\n", position, photo.title.c_str());
+  
+  // Render the cached photo
+  String err;
+  if (!imagePipeline.renderLocalPhoto(photo, imagePath.c_str(), qualityModeEnabled, err)) {
+    Serial.println("Failed to render cached photo: " + err);
+    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    DisplayUI::showBanner("Render error", err);
+    return;
+  }
+  
+  currentPhoto = photo;
+  currentCachePosition = position;
+  
+  updateTaskbarWithCacheInfo();
+}
+
+// Update taskbar with current cache position info
+static void updateTaskbarWithCacheInfo() {
+  uint8_t count = PhotoCacheService::getCachedPhotoCount();
+  uint8_t displayPosition = (currentCachePosition >= 0) ? currentCachePosition : 
+                             PhotoCacheService::getCurrentCacheIndex();
+  
+  M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+  DisplayUI::drawTaskbar(currentPhoto.title, qualityModeEnabled, 
+                         displayPosition, count, offlineModeActive);
+  DisplayUI::refreshRect(DisplayUI::taskbarRect());
+}
 
 void setup() {
   auto cfg = M5.config();
@@ -110,6 +186,14 @@ void setup() {
     Serial.println("SUCCESS: SD Card mounted");
   }
 
+  // Initialize cache system early
+  if (!PhotoCacheService::initCache()) {
+    Serial.println("WARNING: Cache initialization failed");
+  } else {
+    Serial.printf("Cache initialized: %d photos available\n", 
+                  PhotoCacheService::getCachedPhotoCount());
+  }
+
   // Connect WiFi early (needed for splash download on first boot).
   Serial.print("Connecting to WiFi SSID: ");
   Serial.println(SSID);
@@ -140,7 +224,8 @@ void setup() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("\nFailed to connect to WiFi");
-    // Keep splash visible; we'll proceed offline if possible.
+    // Check if we can use offline mode
+    checkOfflineMode();
   }
 
   // Prefetch next image in the background so "Next" is instant.
@@ -150,20 +235,33 @@ void setup() {
 
   // If there was no cached image to show, fetch one now.
   if (!showedLast) {
-    // Still on splash: now fetch and show next photo (this will draw taskbar when done).
-    fetchAndShowNextPhoto();
+    if (wifiOk) {
+      // Still on splash: now fetch and show next photo (this will draw taskbar when done).
+      fetchAndShowNextPhoto();
+    } else if (PhotoCacheService::hasOfflineContent()) {
+      // Offline mode: show most recent cached photo
+      uint8_t mostRecent = PhotoCacheService::getCurrentCacheIndex();
+      showCachedPhotoAtPosition(mostRecent);
+    } else {
+      // No WiFi and no cache - show error
+      M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+      DisplayUI::showBanner("No connection", "No cached photos");
+    }
   }
 
   // If we did show a cached image above, now draw the taskbar persistently.
   if (showedLast) {
-    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-    DisplayUI::drawTaskbar(currentPhoto.title, qualityModeEnabled);
-    DisplayUI::refreshRect(DisplayUI::taskbarRect());
+    // Set position to most recent
+    currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
+    updateTaskbarWithCacheInfo();
   }
   
   // Initialize activity tracking
   PowerService::recordActivity();
   Serial.println("Activity tracking initialized");
+  
+  // Run cache validation in background during boot idle time
+  PhotoCacheService::runMaintenance(500);  // 500ms budget
 }
 
 void loop() {
@@ -199,23 +297,80 @@ void loop() {
   if (WifiService::shouldDisconnectForIdle()) {
     Serial.println("WiFi idle disconnect");
     WifiService::disconnect(false);  // Keep radio on for quick reconnect
+    checkOfflineMode();  // Update offline mode status
   }
 
   switch (inputHandler.poll()) {
-    case InputHandler::Action::Next:
+    case InputHandler::Action::Next: {
       Serial.println("NEXT requested");
       PowerService::recordActivity();
       DisplayUI::clearIdleWarning();
       lastIdleWarningSecond = 0;
       
-      // Reconnect WiFi if disconnected
-      if (!WifiService::isConnected()) {
-        WifiService::reconnect(WIFI_TIMEOUT_MS);
+      // Check if we're in offline mode or viewing cached history
+      if (offlineModeActive) {
+        // Offline: navigate forward through cache only
+        uint8_t count = PhotoCacheService::getCachedPhotoCount();
+        if (count > 0) {
+          int16_t nextPos = currentCachePosition + 1;
+          if (nextPos < count) {
+            showCachedPhotoAtPosition(nextPos);
+          } else {
+            // At the end of cache, wrap to beginning
+            showCachedPhotoAtPosition(0);
+          }
+        }
+      } else if (currentCachePosition >= 0 && 
+                 currentCachePosition < PhotoCacheService::getCurrentCacheIndex()) {
+        // Viewing history: move forward through cache
+        showCachedPhotoAtPosition(currentCachePosition + 1);
+      } else {
+        // At most recent position or no cache: fetch new photo from API
+        // Reconnect WiFi if disconnected
+        if (!WifiService::isConnected()) {
+          WifiService::reconnect(WIFI_TIMEOUT_MS);
+        }
+        WifiService::recordWifiUsage();
+        
+        fetchAndShowNextPhoto();
       }
-      WifiService::recordWifiUsage();
-      
-      fetchAndShowNextPhoto();
       break;
+    }
+    
+    case InputHandler::Action::Previous: {
+      Serial.println("PREVIOUS requested");
+      PowerService::recordActivity();
+      DisplayUI::clearIdleWarning();
+      lastIdleWarningSecond = 0;
+      
+      uint8_t count = PhotoCacheService::getCachedPhotoCount();
+      if (count == 0) {
+        M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+        DisplayUI::showBanner("No history", "No cached photos");
+        break;
+      }
+      
+      // Navigate backward through cache
+      int16_t prevPos;
+      if (currentCachePosition < 0) {
+        // Currently at live/most recent - go to previous
+        prevPos = PhotoCacheService::getCurrentCacheIndex();
+        if (prevPos > 0) {
+          prevPos--;
+        } else {
+          // Wrap to end of cache
+          prevPos = count - 1;
+        }
+      } else if (currentCachePosition > 0) {
+        prevPos = currentCachePosition - 1;
+      } else {
+        // At beginning of cache, wrap to end
+        prevPos = count - 1;
+      }
+      
+      showCachedPhotoAtPosition(prevPos);
+      break;
+    }
       
     case InputHandler::Action::Sleep:
       Serial.println("SLEEP requested - immediate sleep");
@@ -231,19 +386,30 @@ void loop() {
       qualityModeEnabled = !qualityModeEnabled;
       Serial.println(String("QUALITY toggled: ") + (qualityModeEnabled ? "ON" : "OFF"));
 
-      // Re-render the current (last) photo in the newly selected mode.
-      if (!sdCard.ensureMounted() || !SD.exists(PhotoCacheService::kLastImagePath)) {
-        M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-        DisplayUI::showBanner("No cached photo");
-        // Keep taskbar state in sync.
-        DisplayUI::drawTaskbar(currentPhoto.title, qualityModeEnabled);
-        DisplayUI::refreshRect(DisplayUI::taskbarRect());
-        break;
-      }
+      // Determine which image file to re-render
+      String imagePath;
+      if (currentCachePosition >= 0) {
+        // Viewing cached photo
+        PhotoInfo photo;
+        if (PhotoCacheService::getFromCache(currentCachePosition, photo, imagePath)) {
+          String err;
+          if (!imagePipeline.renderLocalPhoto(photo, imagePath.c_str(), qualityModeEnabled, err)) {
+            Serial.println("Quality toggle re-render failed: " + err);
+          }
+        }
+      } else {
+        // Viewing most recent
+        if (!sdCard.ensureMounted() || !SD.exists(PhotoCacheService::kLastImagePath)) {
+          M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+          DisplayUI::showBanner("No cached photo");
+          updateTaskbarWithCacheInfo();
+          break;
+        }
 
-      String err;
-      if (!imagePipeline.renderLocalPhoto(currentPhoto, PhotoCacheService::kLastImagePath, qualityModeEnabled, err)) {
-        Serial.println("Quality toggle re-render failed: " + err);
+        String err;
+        if (!imagePipeline.renderLocalPhoto(currentPhoto, PhotoCacheService::kLastImagePath, qualityModeEnabled, err)) {
+          Serial.println("Quality toggle re-render failed: " + err);
+        }
       }
       break;
     }
@@ -259,7 +425,17 @@ static void fetchAndShowNextPhoto() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected!");
     M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-    DisplayUI::showBanner("WiFi not connected");
+    
+    // Check if we can fallback to offline mode
+    if (PhotoCacheService::hasOfflineContent()) {
+      DisplayUI::showBanner("WiFi unavailable", "Browsing cache");
+      offlineModeActive = true;
+      DisplayUI::showOfflineIndicator(true);
+      uint8_t mostRecent = PhotoCacheService::getCurrentCacheIndex();
+      showCachedPhotoAtPosition(mostRecent);
+    } else {
+      DisplayUI::showBanner("WiFi not connected");
+    }
     return;
   }
 
@@ -287,6 +463,12 @@ static void fetchAndShowNextPhoto() {
     String renderErr;
     if (imagePipeline.renderPrefetchedPhoto(currentPhoto, useQuality, renderErr)) {
       imageChangeCount = nextIndex;
+      
+      // Save to multi-image cache
+      PhotoCacheService::saveToCache(currentPhoto, PhotoCacheService::kLastImagePath);
+      currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
+      
+      updateTaskbarWithCacheInfo();
       prefetchService.start();
       return;
     }
@@ -342,11 +524,21 @@ static void fetchAndShowNextPhoto() {
     } else {
       DisplayUI::showBanner("API error", err);
     }
+    
+    // Fallback to cache if available
+    if (PhotoCacheService::hasOfflineContent()) {
+      delay(1500);  // Show error briefly
+      offlineModeActive = true;
+      uint8_t mostRecent = PhotoCacheService::getCurrentCacheIndex();
+      showCachedPhotoAtPosition(mostRecent);
+    }
     return;
   }
 
   DisplayUI::clearProgress();
   WifiService::recordWifiUsage();  // API call used WiFi
+  offlineModeActive = false;
+  DisplayUI::showOfflineIndicator(false);
 
   // Log successful request metadata
   const RequestMetadata& meta = apiClient.getLastRequestMetadata();
@@ -366,7 +558,12 @@ static void fetchAndShowNextPhoto() {
     return;
   }
 
+  // Save to multi-image cache
+  PhotoCacheService::saveToCache(currentPhoto, PhotoCacheService::kLastImagePath);
+  currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
+
   imageChangeCount = nextIndex;
+  updateTaskbarWithCacheInfo();
   prefetchService.start();
 }
 

@@ -12,6 +12,7 @@ static bool pointInRect(int32_t x, int32_t y, const DisplayUI::Rect& r) {
 }
 
 InputHandler::Action InputHandler::poll() {
+  // Hardware button A -> Next photo
   if (M5.BtnA.wasPressed()) {
     _lastTriggerMs = millis();
     return Action::Next;
@@ -25,12 +26,18 @@ InputHandler::Action InputHandler::poll() {
       }
 
       const auto nextR = DisplayUI::nextButtonRect();
+      const auto prevR = DisplayUI::previousButtonRect();
       const auto sleepR = DisplayUI::sleepButtonRect();
       const auto qualityR = DisplayUI::qualityButtonRect();
 
       if (pointInRect(touch.x, touch.y, nextR)) {
         _lastTriggerMs = millis();
         return Action::Next;
+      }
+
+      if (pointInRect(touch.x, touch.y, prevR)) {
+        _lastTriggerMs = millis();
+        return Action::Previous;
       }
 
       if (pointInRect(touch.x, touch.y, qualityR)) {

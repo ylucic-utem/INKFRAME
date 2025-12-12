@@ -27,11 +27,17 @@ namespace DisplayUI {
 
   int32_t taskbarHeight();
   Rect nextButtonRect();
+  Rect previousButtonRect();   // NEW: Previous button for cache navigation
   Rect qualityButtonRect();
   Rect sleepButtonRect();
 
   // UI
   void drawTaskbar(const String& title, bool qualityEnabled);
+  
+  // Extended taskbar with cache position indicator
+  void drawTaskbar(const String& title, bool qualityEnabled, 
+                   uint8_t cachePosition, uint8_t cacheCount,
+                   bool offlineMode = false);
 
   // Banner (white, centered) + partial refresh helpers
   void showBanner(const String& line1);
@@ -45,6 +51,9 @@ namespace DisplayUI {
   // Progress bar display (for download/network operations)
   void showProgress(const String& label, int percentage);
   void clearProgress();
+
+  // Offline mode indicator
+  void showOfflineIndicator(bool show);
 
   void refreshRect(const Rect& r);
 }

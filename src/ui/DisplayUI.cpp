@@ -43,9 +43,30 @@ int32_t taskbarHeight() {
   return 60;
 }
 
+// Button layout: [SLEEP] [PREV] ---- [cache info] [battery] [title] ---- [QUALITY] [NEXT]
+// Reorganized to fit Previous button
+
+Rect sleepButtonRect() {
+  const int32_t barH = taskbarHeight();
+  const int32_t buttonW = 80;  // Slightly smaller to fit more buttons
+  const int32_t buttonH = 40;
+  const int32_t x = 10;
+  const int32_t y = M5.Display.height() - barH + (barH - buttonH) / 2;
+  return makeRect(x, y, buttonW, buttonH);
+}
+
+Rect previousButtonRect() {
+  const int32_t barH = taskbarHeight();
+  const int32_t buttonW = 80;
+  const int32_t buttonH = 40;
+  const int32_t x = sleepButtonRect().x + sleepButtonRect().w + 8;
+  const int32_t y = M5.Display.height() - barH + (barH - buttonH) / 2;
+  return makeRect(x, y, buttonW, buttonH);
+}
+
 Rect nextButtonRect() {
   const int32_t barH = taskbarHeight();
-  const int32_t buttonW = 110;
+  const int32_t buttonW = 80;
   const int32_t buttonH = 40;
   const int32_t x = M5.Display.width() - (buttonW + 10);
   const int32_t y = M5.Display.height() - barH + (barH - buttonH) / 2;
@@ -54,18 +75,9 @@ Rect nextButtonRect() {
 
 Rect qualityButtonRect() {
   const int32_t barH = taskbarHeight();
-  const int32_t buttonW = 120;
+  const int32_t buttonW = 90;
   const int32_t buttonH = 40;
-  const int32_t x = nextButtonRect().x - (buttonW + 10);
-  const int32_t y = M5.Display.height() - barH + (barH - buttonH) / 2;
-  return makeRect(x, y, buttonW, buttonH);
-}
-
-Rect sleepButtonRect() {
-  const int32_t barH = taskbarHeight();
-  const int32_t buttonW = 110;
-  const int32_t buttonH = 40;
-  const int32_t x = 10;
+  const int32_t x = nextButtonRect().x - (buttonW + 8);
   const int32_t y = M5.Display.height() - barH + (barH - buttonH) / 2;
   return makeRect(x, y, buttonW, buttonH);
 }
@@ -243,13 +255,22 @@ static void drawButton(const Rect& r, const char* label, bool inverted = false) 
   M5.Display.setFont(&fonts::Font2);
   M5.Display.setTextColor(fg);
 
-  const int32_t labelX = r.x + 12;
+  const int32_t labelX = r.x + 8;
   const int32_t labelY = r.y + 12;
   M5.Display.setCursor(labelX, labelY);
   M5.Display.print(label);
 }
 
+// Basic taskbar (backward compatible)
 void drawTaskbar(const String& title, bool qualityEnabled) {
+  // Call extended version with no cache info
+  drawTaskbar(title, qualityEnabled, 0, 0, false);
+}
+
+// Extended taskbar with cache position and offline mode
+void drawTaskbar(const String& title, bool qualityEnabled, 
+                 uint8_t cachePosition, uint8_t cacheCount,
+                 bool offlineMode) {
   const int32_t barH = taskbarHeight();
   const int32_t y0 = M5.Display.height() - barH;
 
@@ -259,34 +280,68 @@ void drawTaskbar(const String& title, bool qualityEnabled) {
 
   // Buttons.
   drawButton(sleepButtonRect(), "SLEEP");
-  drawButton(qualityButtonRect(), "QUALITY", qualityEnabled);
+  drawButton(previousButtonRect(), "PREV");
+  drawButton(qualityButtonRect(), "QUAL", qualityEnabled);
   drawButton(nextButtonRect(), "NEXT");
 
-  // Battery + title in the middle area.
-  const int batt = PowerService::batteryPercent();
-  String battText = (batt >= 0) ? String("BAT ") + batt + "%" : String("BAT --");
-
-  const int32_t left = sleepButtonRect().x + sleepButtonRect().w + 10;
+  // Middle info area
+  const int32_t left = previousButtonRect().x + previousButtonRect().w + 10;
   const int32_t right = qualityButtonRect().x - 10;
-  const int32_t midW = right - left;
-  const int32_t textY = y0 + 10;
+  const int32_t textY = y0 + 8;
 
   M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextColor(TFT_BLACK);
 
+  // Cache position indicator (e.g., "3/10")
+  if (cacheCount > 0) {
+    String cacheText = String(cachePosition + 1) + "/" + String(cacheCount);
+    M5.Display.setCursor(left, textY);
+    M5.Display.print("[");
+    M5.Display.print(cacheText);
+    M5.Display.print("]");
+  }
+  
+  // Offline mode indicator
+  if (offlineMode) {
+    M5.Display.setCursor(left, textY + 14);
+    M5.Display.print("OFFLINE");
+  }
+
   // Battery at the left of the mid area.
-  M5.Display.setCursor(left, textY);
-  M5.Display.print(battText);
+  const int batt = PowerService::batteryPercent();
+  String battText = (batt >= 0) ? String("BAT ") + batt + "%" : String("BAT --");
+  
+  const int32_t battX = left + (cacheCount > 0 ? 60 : 0);
+  M5.Display.setCursor(battX, textY);
+  if (cacheCount == 0) {  // Only show battery if no cache info on first line
+    M5.Display.print(battText);
+  }
 
   // Title after battery (truncate to fit).
   String t = title;
   if (t.length() > 0) {
     // Simple truncation; keep UI stable across fonts.
-    const int maxChars = 32;
+    const int maxChars = 28;
     if (t.length() > maxChars) t = t.substring(0, maxChars) + "...";
-    M5.Display.setCursor(left, textY + 18);
-    M5.Display.print("Title: ");
-    M5.Display.print(t);
+    
+    // Position title on second line if we have cache info
+    const int32_t titleY = (cacheCount > 0) ? textY + 14 : textY + 14;
+    M5.Display.setCursor(battX, titleY);
+    if (!offlineMode) {
+      M5.Display.print(t);
+    } else {
+      // Shorter title when offline
+      if (t.length() > 18) t = t.substring(0, 18) + "...";
+      M5.Display.setCursor(left + 60, textY + 14);
+      M5.Display.print(t);
+    }
+  }
+  
+  // Show battery on right side when cache info is present
+  if (cacheCount > 0) {
+    const int32_t battRightX = right - 60;
+    M5.Display.setCursor(battRightX, textY);
+    M5.Display.print(battText);
   }
 }
 
@@ -307,7 +362,7 @@ void showIdleWarning(uint32_t secondsRemaining) {
   
   // Draw warning in taskbar area
   const Rect bar = taskbarRect();
-  const int32_t warningX = sleepButtonRect().x + sleepButtonRect().w + 5;
+  const int32_t warningX = previousButtonRect().x + previousButtonRect().w + 5;
   const int32_t warningY = bar.y + 10;
   const int32_t warningW = 130;
   const int32_t warningH = 16;
@@ -335,7 +390,7 @@ void clearIdleWarning() {
   if (!idleWarningVisible) return;
   
   const Rect bar = taskbarRect();
-  const int32_t warningX = sleepButtonRect().x + sleepButtonRect().w + 5;
+  const int32_t warningX = previousButtonRect().x + previousButtonRect().w + 5;
   const int32_t warningY = bar.y + 10;
   const int32_t warningW = 130;
   const int32_t warningH = 16;
@@ -420,5 +475,32 @@ void clearProgress() {
   lastProgressPercent = -1;
 }
 
-} // namespace DisplayUI
+static bool offlineIndicatorVisible = false;
 
+void showOfflineIndicator(bool show) {
+  if (show == offlineIndicatorVisible) return;
+  
+  const Rect bar = taskbarRect();
+  const int32_t indicatorX = previousButtonRect().x + previousButtonRect().w + 80;
+  const int32_t indicatorY = bar.y + 8;
+  const int32_t indicatorW = 70;
+  const int32_t indicatorH = 14;
+  
+  if (show) {
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextColor(TFT_BLACK);
+    M5.Display.fillRect(indicatorX, indicatorY, indicatorW, indicatorH, TFT_WHITE);
+    M5.Display.drawRect(indicatorX, indicatorY, indicatorW, indicatorH, TFT_BLACK);
+    M5.Display.setCursor(indicatorX + 4, indicatorY + 2);
+    M5.Display.print("OFFLINE");
+  } else {
+    M5.Display.fillRect(indicatorX, indicatorY, indicatorW, indicatorH, TFT_WHITE);
+  }
+  
+  Rect indicatorRect = makeRect(indicatorX, indicatorY, indicatorW, indicatorH);
+  refreshRect(indicatorRect);
+  
+  offlineIndicatorVisible = show;
+}
+
+} // namespace DisplayUI
