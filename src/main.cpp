@@ -47,12 +47,20 @@ static uint32_t lastIdleWarningSecond = 0;
 static int16_t currentCachePosition = -1;  // -1 = viewing live/most recent, >=0 = viewing cached history
 static bool offlineModeActive = false;
 
+// UI enhancement state
+static bool showingPhotoInfo = false;      // Photo info overlay toggle
+static uint32_t lastBatteryCheckMs = 0;    // Battery level check timer
+static uint32_t currentPhotoTimestamp = 0; // When current photo was downloaded
+static int renderAnimationStep = 0;        // For rendering animation
+
 static void fetchAndShowNextPhoto();
 static bool showLastPhotoOnBoot();
 static void enterIdleSleep();
 static void showCachedPhotoAtPosition(uint8_t position);
 static void updateTaskbarWithCacheInfo();
 static bool checkOfflineMode();
+static void checkBatteryLevel();      // Battery monitoring with warnings
+static void togglePhotoInfo();        // Toggle photo info overlay
 
 // Helper to enter idle/deep sleep with proper cleanup
 static void enterIdleSleep() {
@@ -110,7 +118,7 @@ static void showCachedPhotoAtPosition(uint8_t position) {
   if (!PhotoCacheService::getFromCache(position, photo, imagePath)) {
     Serial.printf("Failed to get cached photo at position %d\n", position);
     M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-    DisplayUI::showBanner("Cache error", "Photo not found");
+    DisplayUI::showErrorBanner("Cache Error", "Photo not found", DisplayUI::ErrorType::SDCard);
     return;
   }
   
@@ -124,12 +132,27 @@ static void showCachedPhotoAtPosition(uint8_t position) {
   if (!imagePipeline.renderLocalPhoto(photo, imagePath.c_str(), qualityModeEnabled, err)) {
     Serial.println("Failed to render cached photo: " + err);
     M5.Display.setEpdMode(epd_mode_t::epd_fastest);
-    DisplayUI::showBanner("Render error", err);
+    DisplayUI::showErrorBanner("Render Error", err, DisplayUI::ErrorType::Render);
     return;
   }
   
   currentPhoto = photo;
   currentCachePosition = position;
+  
+  // Get timestamp from cache entry
+  const CacheEntry* entry = PhotoCacheService::getCacheEntry(position);
+  if (entry && entry->valid) {
+    currentPhotoTimestamp = entry->cachedTimestamp;
+  } else {
+    currentPhotoTimestamp = 0;
+  }
+  
+  // Reset photo info overlay state
+  showingPhotoInfo = false;
+  
+  // Draw cache position indicator
+  uint8_t count = PhotoCacheService::getCachedPhotoCount();
+  DisplayUI::drawCachePositionIndicator(position, count);
   
   updateTaskbarWithCacheInfo();
 }
@@ -267,6 +290,12 @@ void setup() {
 void loop() {
   M5.update();
 
+  // Periodic battery level check (every minute)
+  if (millis() - lastBatteryCheckMs >= BATTERY_CHECK_INTERVAL_MS) {
+    lastBatteryCheckMs = millis();
+    checkBatteryLevel();
+  }
+
   // Check idle timeout BEFORE processing input
   const uint32_t idleTime = PowerService::getIdleTime();
   const uint32_t timeToSleep = (idleTime < IDLE_TIMEOUT_MS) ? (IDLE_TIMEOUT_MS - idleTime) : 0;
@@ -300,7 +329,15 @@ void loop() {
     checkOfflineMode();  // Update offline mode status
   }
 
-  switch (inputHandler.poll()) {
+  // Process input and provide visual feedback
+  InputHandler::Action action = inputHandler.poll();
+  
+  // Show touch feedback for any action (except None)
+  if (action != InputHandler::Action::None) {
+    DisplayUI::showTouchFeedback();
+  }
+
+  switch (action) {
     case InputHandler::Action::Next: {
       Serial.println("NEXT requested");
       PowerService::recordActivity();
@@ -413,6 +450,17 @@ void loop() {
       }
       break;
     }
+    
+    case InputHandler::Action::ToggleInfo: {
+      Serial.println("INFO toggle requested");
+      PowerService::recordActivity();
+      DisplayUI::clearIdleWarning();
+      lastIdleWarningSecond = 0;
+      
+      togglePhotoInfo();
+      break;
+    }
+    
     case InputHandler::Action::None:
     default:
       break;
@@ -501,28 +549,26 @@ static void fetchAndShowNextPhoto() {
                   meta.retryCount,
                   meta.httpCode);
 
-    // Handle specific error categories with appropriate messages
+    // Handle specific error categories with appropriate messages and icons
     if (meta.cancelled) {
       // Request was cancelled, no error banner needed
       return;
     } else if (err.indexOf("Unauthorized") >= 0 || err.indexOf("403") >= 0) {
-      DisplayUI::showBanner("API error", "Check credentials");
+      DisplayUI::showErrorBanner("API Error", "Check credentials", DisplayUI::ErrorType::API);
     } else if (err.indexOf("Rate limited") >= 0 || err.indexOf("429") >= 0) {
-      DisplayUI::showBanner("API error", "Rate limited - wait");
+      DisplayUI::showErrorBanner("API Error", "Rate limited - wait", DisplayUI::ErrorType::API);
     } else if (err.indexOf("Not found") >= 0 || err.indexOf("404") >= 0) {
-      DisplayUI::showBanner("API error", "Photo not found");
+      DisplayUI::showErrorBanner("API Error", "Photo not found", DisplayUI::ErrorType::API);
     } else if (err.startsWith("JSON Parse Error")) {
-      DisplayUI::showBanner("API error", "JSON parse");
-    } else if (err.startsWith("HTTP Error") || err.indexOf("HTTP") >= 0) {
-      DisplayUI::showBanner("API error", err);
+      DisplayUI::showErrorBanner("API Error", "JSON parse failed", DisplayUI::ErrorType::API);
     } else if (err.indexOf("No photos") >= 0) {
-      DisplayUI::showBanner("API error", "No photos");
+      DisplayUI::showErrorBanner("API Error", "No photos available", DisplayUI::ErrorType::API);
     } else if (err.indexOf("timeout") >= 0 || err.indexOf("Timeout") >= 0) {
-      DisplayUI::showBanner("Network error", "Connection timeout");
+      DisplayUI::showErrorBanner("Network Error", "Connection timeout", DisplayUI::ErrorType::Network);
     } else if (err.indexOf("Connection") >= 0) {
-      DisplayUI::showBanner("Network error", err);
+      DisplayUI::showErrorBanner("Network Error", err, DisplayUI::ErrorType::Network);
     } else {
-      DisplayUI::showBanner("API error", err);
+      DisplayUI::showErrorBanner("Error", err, DisplayUI::ErrorType::Generic);
     }
     
     // Fallback to cache if available
@@ -561,6 +607,10 @@ static void fetchAndShowNextPhoto() {
   // Save to multi-image cache
   PhotoCacheService::saveToCache(currentPhoto, PhotoCacheService::kLastImagePath);
   currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
+  currentPhotoTimestamp = millis();  // Track when photo was downloaded
+  
+  // Clear photo info overlay state since we have a new photo
+  showingPhotoInfo = false;
 
   imageChangeCount = nextIndex;
   updateTaskbarWithCacheInfo();
@@ -587,5 +637,92 @@ static bool showLastPhotoOnBoot() {
   }
 
   currentPhoto = last;
+  currentPhotoTimestamp = millis();  // Mark as just loaded
   return true;
+}
+
+// Check battery level and show warnings if needed
+static void checkBatteryLevel() {
+  const int batt = PowerService::batteryPercent();
+  
+  if (batt < 0) {
+    return;  // Battery reading not available
+  }
+  
+  Serial.printf("Battery check: %d%%\n", batt);
+  
+  // Critical battery warning
+  if (batt <= BATTERY_CRITICAL_PERCENT) {
+    Serial.println("CRITICAL: Battery critically low!");
+    
+    // Show prominent warning banner
+    M5.Display.setEpdMode(epd_mode_t::epd_fastest);
+    DisplayUI::showErrorBanner("Battery Critical", 
+                               String(batt) + "% - Entering power save",
+                               DisplayUI::ErrorType::Generic);
+    delay(2000);
+    
+    // Disable WiFi and prefetching to conserve power
+    prefetchService.stop();
+    if (WifiService::isConnected()) {
+      Serial.println("Disabling WiFi to conserve battery");
+      WifiService::disconnect(true);
+    }
+    
+    // Suggest entering sleep mode
+    DisplayUI::showBanner("Press SLEEP", "to extend battery life");
+  }
+  // Low battery warning (but not critical)
+  else if (batt <= BATTERY_LOW_PERCENT) {
+    Serial.println("WARNING: Battery low");
+    
+    // Update status text to show warning
+    DisplayUI::setStatusText("Low Batt: " + String(batt) + "%");
+    
+    // Stop prefetching to save power
+    prefetchService.stop();
+  }
+  
+  // Update battery icon if threshold crossed
+  if (DisplayUI::updateBatteryIconIfNeeded()) {
+    // Redraw taskbar to show updated battery icon
+    updateTaskbarWithCacheInfo();
+  }
+}
+
+// Toggle photo info overlay
+static void togglePhotoInfo() {
+  showingPhotoInfo = !showingPhotoInfo;
+  
+  if (showingPhotoInfo) {
+    Serial.println("Showing photo info overlay");
+    
+    // Calculate how long ago the photo was downloaded
+    uint32_t ageMs = 0;
+    if (currentPhotoTimestamp > 0) {
+      ageMs = millis() - currentPhotoTimestamp;
+    }
+    
+    // Get image dimensions if available from cache entry
+    int32_t imgW = 0, imgH = 0;
+    if (currentCachePosition >= 0) {
+      const CacheEntry* entry = PhotoCacheService::getCacheEntry(currentCachePosition);
+      if (entry && entry->valid) {
+        // We don't store dimensions in cache, so leave at 0
+        // Could be enhanced to store image dimensions in CacheEntry
+      }
+    }
+    
+    // Show the overlay
+    DisplayUI::showPhotoInfo(currentPhoto, ageMs, imgW, imgH);
+  } else {
+    Serial.println("Hiding photo info overlay");
+    DisplayUI::hidePhotoInfo();
+    
+    // Redraw the photo to remove overlay
+    // For now, just update the taskbar to trigger a refresh
+    // A full re-render would be needed to completely remove the overlay
+    // but that's expensive on e-ink, so we mark it as hidden
+    // and it will be removed on next photo change
+  }
 }

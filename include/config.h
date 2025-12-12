@@ -129,7 +129,32 @@
 // Critical battery percentage threshold
 #define BATTERY_CRITICAL_PERCENT 15
 
+// Low battery warning threshold
+#define BATTERY_LOW_PERCENT 20
+
 // Extended wake interval for low battery (48 hours = 172800 seconds)
 #define LOW_BATTERY_WAKE_INTERVAL_SECONDS 172800
+
+// ============ UI Enhancement Configuration ============
+// Battery icon refresh interval (5 minutes = 300000 ms)
+#define BATTERY_REFRESH_INTERVAL_MS 300000
+
+// Battery icon minimum change to trigger redraw (10%)
+#define BATTERY_CHANGE_THRESHOLD 10
+
+// Battery check interval in loop (1 minute = 60000 ms)
+#define BATTERY_CHECK_INTERVAL_MS 60000
+
+// Progress bar minimum update threshold (5%)
+#define PROGRESS_UPDATE_THRESHOLD 5
+
+// Button press feedback duration (ms)
+#define BUTTON_FEEDBACK_MS 100
+
+// Rendering animation update interval (ms)
+#define RENDER_ANIMATION_INTERVAL_MS 1000
+
+// Long press duration for toggle info (ms)
+#define LONG_PRESS_MS 800
 
 #endif // CONFIG_H
