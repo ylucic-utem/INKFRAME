@@ -6,10 +6,22 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#if defined(__has_include)
+#if __has_include("config.local.h")
+#include "config.local.h"
+#endif
+#endif
+
 // ============ WiFi Configuration ============
-// IMPORTANT: Configure these with your network credentials
-#define WIFI_SSID "D815"
-#define WIFI_PASSWORD "inti815inti815"
+// IMPORTANT: Configure these with your network credentials.
+// Prefer using include/config.local.h (ignored by git) to override defaults.
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
 #define WIFI_TIMEOUT_MS 20000  // WiFi connection timeout in milliseconds
 
 // ============ API Configuration ============
@@ -81,7 +93,11 @@
 
 // ============ SD Card Configuration ============
 #define SD_CARD_ENABLE true              // Enable SD card operations
-#define SD_CARD_CS_PIN GPIO_NUM_21       // Chip select pin for SD card
+// PaperS3 SD Card SPI Pins (single source of truth for main.cpp + SDCardService)
+#define SD_SPI_CS_PIN 47
+#define SD_SPI_SCK_PIN 39
+#define SD_SPI_MOSI_PIN 38
+#define SD_SPI_MISO_PIN 40
 #define SD_SAVE_PHOTOS true              // Save downloaded photos
 #define SD_SAVE_METADATA true            // Save photo metadata to text files
 #define SD_PHOTO_FILENAME "/photo.jpg"   // Path for the current photo

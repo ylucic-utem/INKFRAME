@@ -31,14 +31,14 @@ The following libraries are automatically installed via PlatformIO:
 
 ### 2. Configure WiFi Credentials
 
-Edit [src/main.cpp](src/main.cpp) and update the WiFi credentials:
+Copy [`include/config.local.h.example`](include/config.local.h.example) to `include/config.local.h` and set your WiFi credentials:
 
 ```cpp
-const char* SSID = "YOUR_SSID";
-const char* PASSWORD = "YOUR_PASSWORD";
+#define WIFI_SSID "YOUR_SSID"
+#define WIFI_PASSWORD "YOUR_PASSWORD"
 ```
 
-Replace `YOUR_SSID` and `YOUR_PASSWORD` with your actual WiFi network name and password.
+`config.local.h` is ignored by git and automatically loaded by [`include/config.h`](include/config.h).
 
 ### 3. Build and Upload
 
@@ -46,14 +46,21 @@ Using PlatformIO:
 
 ```bash
 # Build the project
-pio run -e m5stack-papers3
+pio run -e PaperS3
 
 # Upload to device
-pio run -e m5stack-papers3 -t upload
+pio run -e PaperS3 -t upload
 
 # Monitor serial output
-pio run -e m5stack-papers3 -t monitor
+pio run -e PaperS3 -t monitor
 ```
+
+
+## Hardware Pin Notes
+
+This project currently targets **M5Stack PaperS3** SD wiring. SD SPI pins are defined once in [`include/config.h`](include/config.h) (`SD_SPI_CS_PIN`, `SD_SPI_SCK_PIN`, `SD_SPI_MOSI_PIN`, `SD_SPI_MISO_PIN`) and consumed by `main.cpp`.
+
+If you are porting to different hardware, update those values in `config.h`.
 
 ## Project Structure
 

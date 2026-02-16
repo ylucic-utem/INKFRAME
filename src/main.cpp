@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <SD.h>
 #include <esp_sleep.h>
+#include <time.h>
 
 #include "config.h"
 
@@ -17,13 +18,6 @@
 
 #include "ui/DisplayUI.h"
 #include "ui/InputHandler.h"
-
-// PaperS3 SD Card SPI Pins (CRITICAL - must match PaperS3 hardware)
-// These are the CORRECT pins for M5Stack PaperS3 - different from older M5Paper!
-#define SD_SPI_CS_PIN   47
-#define SD_SPI_SCK_PIN  39
-#define SD_SPI_MOSI_PIN 38
-#define SD_SPI_MISO_PIN 40
 
 // WiFi credentials - CONFIGURE IN config.h
 static const char* SSID = WIFI_SSID;
@@ -50,8 +44,7 @@ static bool offlineModeActive = false;
 // UI enhancement state
 static bool showingPhotoInfo = false;      // Photo info overlay toggle
 static uint32_t lastBatteryCheckMs = 0;    // Battery level check timer
-static uint32_t currentPhotoTimestamp = 0; // When current photo was downloaded
-static int renderAnimationStep = 0;        // For rendering animation
+static uint32_t currentPhotoTimestampEpoch = 0; // UNIX time when photo was downloaded (0 = unknown)
 
 static void fetchAndShowNextPhoto();
 static bool showLastPhotoOnBoot();
@@ -61,6 +54,78 @@ static void updateTaskbarWithCacheInfo();
 static bool checkOfflineMode();
 static void checkBatteryLevel();      // Battery monitoring with warnings
 static void togglePhotoInfo();        // Toggle photo info overlay
+static uint32_t nowEpochSeconds();
+static int16_t findNextCachedSlot(int16_t startSlot, int8_t direction, bool wrap);
+static int16_t findNewerCachedSlot(int16_t currentSlot);
+static int16_t findOlderCachedSlot(int16_t currentSlot, bool wrap);
+
+
+static uint32_t nowEpochSeconds() {
+  const time_t now = time(nullptr);
+  // Guard against unset RTC/SNTP values.
+  return (now > 1700000000) ? static_cast<uint32_t>(now) : 0;
+}
+
+static int16_t findNextCachedSlot(int16_t startSlot, int8_t direction, bool wrap) {
+  const uint8_t count = PhotoCacheService::getCachedPhotoCount();
+  if (count == 0) {
+    return -1;
+  }
+
+  int16_t cursor = startSlot;
+  for (uint8_t i = 0; i < CACHE_MAX_IMAGES; ++i) {
+    cursor = (cursor + direction + CACHE_MAX_IMAGES) % CACHE_MAX_IMAGES;
+
+    PhotoInfo candidate;
+    String candidatePath;
+    if (PhotoCacheService::getFromCache(static_cast<uint8_t>(cursor), candidate, candidatePath)) {
+      return cursor;
+    }
+
+    if (!wrap && cursor == PhotoCacheService::getCurrentCacheIndex()) {
+      break;
+    }
+  }
+
+  return -1;
+}
+
+static int16_t findNewerCachedSlot(int16_t currentSlot) {
+  if (currentSlot < 0) {
+    return -1;
+  }
+
+  const int16_t mostRecent = PhotoCacheService::getCurrentCacheIndex();
+  if (currentSlot == mostRecent) {
+    return -1;
+  }
+
+  int16_t cursor = currentSlot;
+  for (uint8_t i = 0; i < CACHE_MAX_IMAGES; ++i) {
+    cursor = (cursor + 1 + CACHE_MAX_IMAGES) % CACHE_MAX_IMAGES;
+
+    PhotoInfo candidate;
+    String candidatePath;
+    if (PhotoCacheService::getFromCache(static_cast<uint8_t>(cursor), candidate, candidatePath)) {
+      return cursor;
+    }
+
+    if (cursor == mostRecent) {
+      break;
+    }
+  }
+
+  return -1;
+}
+
+static int16_t findOlderCachedSlot(int16_t currentSlot, bool wrap) {
+  int16_t start = currentSlot;
+  if (start < 0) {
+    start = PhotoCacheService::getCurrentCacheIndex();
+  }
+
+  return findNextCachedSlot(start, -1, wrap);
+}
 
 // Helper to enter idle/deep sleep with proper cleanup
 static void enterIdleSleep() {
@@ -142,9 +207,9 @@ static void showCachedPhotoAtPosition(uint8_t position) {
   // Get timestamp from cache entry
   const CacheEntry* entry = PhotoCacheService::getCacheEntry(position);
   if (entry && entry->valid) {
-    currentPhotoTimestamp = entry->cachedTimestamp;
+    currentPhotoTimestampEpoch = entry->cachedTimestamp;
   } else {
-    currentPhotoTimestamp = 0;
+    currentPhotoTimestampEpoch = 0;
   }
   
   // Reset photo info overlay state
@@ -346,23 +411,27 @@ void loop() {
       
       // Check if we're in offline mode or viewing cached history
       if (offlineModeActive) {
-        // Offline: navigate forward through cache only
-        uint8_t count = PhotoCacheService::getCachedPhotoCount();
-        if (count > 0) {
-          int16_t nextPos = currentCachePosition + 1;
-          if (nextPos < count) {
-            showCachedPhotoAtPosition(nextPos);
-          } else {
-            // At the end of cache, wrap to beginning
-            showCachedPhotoAtPosition(0);
-          }
+        const int16_t nextPos = findNewerCachedSlot(currentCachePosition);
+        if (nextPos >= 0) {
+          showCachedPhotoAtPosition(static_cast<uint8_t>(nextPos));
+          break;
         }
-      } else if (currentCachePosition >= 0 && 
-                 currentCachePosition < PhotoCacheService::getCurrentCacheIndex()) {
-        // Viewing history: move forward through cache
-        showCachedPhotoAtPosition(currentCachePosition + 1);
-      } else {
-        // At most recent position or no cache: fetch new photo from API
+
+        const int16_t wrapPos = findOlderCachedSlot(-1, true);
+        if (wrapPos >= 0) {
+          showCachedPhotoAtPosition(static_cast<uint8_t>(wrapPos));
+        }
+        break;
+      } else if (currentCachePosition >= 0) {
+        // Viewing history: move toward newer cache entries (ring-aware)
+        const int16_t nextPos = findNewerCachedSlot(currentCachePosition);
+        if (nextPos >= 0) {
+          showCachedPhotoAtPosition(static_cast<uint8_t>(nextPos));
+          break;
+        }
+      }
+
+      // At most recent position or no cache: fetch new photo from API
         // Reconnect WiFi if disconnected
         if (!WifiService::isConnected()) {
           WifiService::reconnect(WIFI_TIMEOUT_MS);
@@ -370,7 +439,6 @@ void loop() {
         WifiService::recordWifiUsage();
         
         fetchAndShowNextPhoto();
-      }
       break;
     }
     
@@ -387,25 +455,11 @@ void loop() {
         break;
       }
       
-      // Navigate backward through cache
-      int16_t prevPos;
-      if (currentCachePosition < 0) {
-        // Currently at live/most recent - go to previous
-        prevPos = PhotoCacheService::getCurrentCacheIndex();
-        if (prevPos > 0) {
-          prevPos--;
-        } else {
-          // Wrap to end of cache
-          prevPos = count - 1;
-        }
-      } else if (currentCachePosition > 0) {
-        prevPos = currentCachePosition - 1;
-      } else {
-        // At beginning of cache, wrap to end
-        prevPos = count - 1;
+      // Navigate backward through cache (ring-aware)
+      const int16_t prevPos = findOlderCachedSlot(currentCachePosition, true);
+      if (prevPos >= 0) {
+        showCachedPhotoAtPosition(static_cast<uint8_t>(prevPos));
       }
-      
-      showCachedPhotoAtPosition(prevPos);
       break;
     }
       
@@ -515,7 +569,8 @@ static void fetchAndShowNextPhoto() {
       // Save to multi-image cache
       PhotoCacheService::saveToCache(currentPhoto, PhotoCacheService::kLastImagePath);
       currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
-      
+      currentPhotoTimestampEpoch = nowEpochSeconds();
+
       updateTaskbarWithCacheInfo();
       prefetchService.start();
       return;
@@ -607,7 +662,7 @@ static void fetchAndShowNextPhoto() {
   // Save to multi-image cache
   PhotoCacheService::saveToCache(currentPhoto, PhotoCacheService::kLastImagePath);
   currentCachePosition = PhotoCacheService::getCurrentCacheIndex();
-  currentPhotoTimestamp = millis();  // Track when photo was downloaded
+  currentPhotoTimestampEpoch = nowEpochSeconds();
   
   // Clear photo info overlay state since we have a new photo
   showingPhotoInfo = false;
@@ -637,7 +692,7 @@ static bool showLastPhotoOnBoot() {
   }
 
   currentPhoto = last;
-  currentPhotoTimestamp = millis();  // Mark as just loaded
+  currentPhotoTimestampEpoch = 0;  // Unknown age for legacy last-photo metadata
   return true;
 }
 
@@ -699,8 +754,9 @@ static void togglePhotoInfo() {
     
     // Calculate how long ago the photo was downloaded
     uint32_t ageMs = 0;
-    if (currentPhotoTimestamp > 0) {
-      ageMs = millis() - currentPhotoTimestamp;
+    const uint32_t nowEpoch = nowEpochSeconds();
+    if (currentPhotoTimestampEpoch > 0 && nowEpoch > currentPhotoTimestampEpoch) {
+      ageMs = (nowEpoch - currentPhotoTimestampEpoch) * 1000;
     }
     
     // Get image dimensions if available from cache entry

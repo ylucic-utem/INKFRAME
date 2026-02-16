@@ -499,18 +499,20 @@ void showPhotoInfo(const PhotoInfo& photo, uint32_t downloadTimestamp,
   }
   
   // Timestamp
+  String timeStr = "Downloaded: ";
   if (downloadTimestamp > 0) {
-    String timeStr = "Downloaded: ";
     uint32_t mins = downloadTimestamp / 60000;
     if (mins < 60) {
       timeStr += String(mins) + " min ago";
     } else {
       timeStr += String(mins / 60) + " hrs ago";
     }
-    M5.Display.setCursor(overlayX + padding, textY);
-    M5.Display.print(timeStr);
-    textY += lineH;
+  } else {
+    timeStr += "unknown";
   }
+  M5.Display.setCursor(overlayX + padding, textY);
+  M5.Display.print(timeStr);
+  textY += lineH;
   
   // Resolution if available
   if (imgWidth > 0 && imgHeight > 0) {
