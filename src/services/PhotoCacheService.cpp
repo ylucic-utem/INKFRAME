@@ -2,8 +2,18 @@
 
 #include <SD.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
+#include "config.h"
 #include "services/IoMutex.h"
+
+#if SERIAL_DEBUG
+#define CACHE_DEBUG_PRINTLN(msg) Serial.println(msg)
+#define CACHE_DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+#define CACHE_DEBUG_PRINTLN(msg) ((void)0)
+#define CACHE_DEBUG_PRINTF(...) ((void)0)
+#endif
 
 // Static member initialization
 CacheEntry PhotoCacheService::cacheEntries[CACHE_MAX_IMAGES];
@@ -24,6 +34,11 @@ static void trimCR(String& s) {
   if (s.endsWith("\r")) {
     s.remove(s.length() - 1);
   }
+}
+
+static uint32_t currentEpochSeconds() {
+  const time_t now = time(nullptr);
+  return (now > 1700000000) ? static_cast<uint32_t>(now) : 0;
 }
 
 static bool replaceFile(const char* src, const char* dst, String& outError) {
@@ -173,58 +188,58 @@ String PhotoCacheService::getCacheMetaPath(uint8_t index) {
 
 uint32_t PhotoCacheService::calculateCRC32(const char* filePath) {
   // NOTE: Caller must hold IoGuard - this is an internal helper
-  
+
   if (!SD.exists(filePath)) {
     return 0;
   }
-  
+
   File f = SD.open(filePath, FILE_READ);
   if (!f) {
     return 0;
   }
-  
+
   uint32_t crc = 0xFFFFFFFF;
   uint8_t buffer[512];
-  
+
   while (f.available()) {
     size_t bytesRead = f.read(buffer, sizeof(buffer));
     for (size_t i = 0; i < bytesRead; i++) {
       crc = (crc >> 8) ^ crc32Table[(crc ^ buffer[i]) & 0xFF];
     }
   }
-  
+
   f.close();
   return crc ^ 0xFFFFFFFF;
 }
 
 bool PhotoCacheService::loadCacheEntry(uint8_t index) {
   if (index >= CACHE_MAX_IMAGES) return false;
-  
+
   IoGuard guard;
-  
+
   String metaPath = getCacheMetaPath(index);
   if (!SD.exists(metaPath.c_str())) {
     cacheEntries[index].valid = false;
     return false;
   }
-  
+
   File f = SD.open(metaPath.c_str(), FILE_READ);
   if (!f) {
     cacheEntries[index].valid = false;
     return false;
   }
-  
+
   // Parse JSON metadata
   StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, f);
   f.close();
-  
+
   if (err) {
     Serial.println("Cache entry JSON parse error: " + String(err.c_str()));
     cacheEntries[index].valid = false;
     return false;
   }
-  
+
   CacheEntry& entry = cacheEntries[index];
   entry.photoInfo.title = doc["title"].as<String>();
   entry.photoInfo.url = doc["url"].as<String>();
@@ -234,35 +249,35 @@ bool PhotoCacheService::loadCacheEntry(uint8_t index) {
   entry.cachedTimestamp = doc["timestamp"].as<uint32_t>();
   entry.accessCount = doc["accessCount"].as<uint32_t>();
   entry.crc32 = doc["crc32"].as<uint32_t>();
-  
+
   // Check if image file exists
   if (!SD.exists(entry.localFilePath.c_str())) {
     entry.valid = false;
     return false;
   }
-  
+
   entry.valid = true;
   return true;
 }
 
 bool PhotoCacheService::saveCacheEntry(uint8_t index) {
   if (index >= CACHE_MAX_IMAGES) return false;
-  
+
   IoGuard guard;
-  
+
   const CacheEntry& entry = cacheEntries[index];
   String metaPath = getCacheMetaPath(index);
-  
+
   // Remove existing file
   if (SD.exists(metaPath.c_str())) {
     SD.remove(metaPath.c_str());
   }
-  
+
   File f = SD.open(metaPath.c_str(), FILE_WRITE);
   if (!f) {
     return false;
   }
-  
+
   // Create JSON document
   StaticJsonDocument<512> doc;
   doc["title"] = entry.photoInfo.title;
@@ -271,42 +286,42 @@ bool PhotoCacheService::saveCacheEntry(uint8_t index) {
   doc["timestamp"] = entry.cachedTimestamp;
   doc["accessCount"] = entry.accessCount;
   doc["crc32"] = entry.crc32;
-  
+
   serializeJson(doc, f);
   f.close();
-  
+
   return true;
 }
 
 void PhotoCacheService::loadCacheIndex() {
   IoGuard guard;
-  
+
   if (!SD.exists(kCacheIndexFile)) {
     currentCacheIndex = 0;
     cachedPhotoCount = 0;
     return;
   }
-  
+
   File f = SD.open(kCacheIndexFile, FILE_READ);
   if (!f) {
     currentCacheIndex = 0;
     cachedPhotoCount = 0;
     return;
   }
-  
+
   StaticJsonDocument<128> doc;
   DeserializationError err = deserializeJson(doc, f);
   f.close();
-  
+
   if (err) {
     currentCacheIndex = 0;
     cachedPhotoCount = 0;
     return;
   }
-  
+
   currentCacheIndex = doc["currentIndex"].as<uint8_t>();
   cachedPhotoCount = doc["count"].as<uint8_t>();
-  
+
   // Bounds check
   if (currentCacheIndex >= CACHE_MAX_IMAGES) currentCacheIndex = 0;
   if (cachedPhotoCount > CACHE_MAX_IMAGES) cachedPhotoCount = CACHE_MAX_IMAGES;
@@ -314,22 +329,22 @@ void PhotoCacheService::loadCacheIndex() {
 
 void PhotoCacheService::saveCacheIndex() {
   IoGuard guard;
-  
+
   // Remove existing file
   if (SD.exists(kCacheIndexFile)) {
     SD.remove(kCacheIndexFile);
   }
-  
+
   File f = SD.open(kCacheIndexFile, FILE_WRITE);
   if (!f) {
     Serial.println("Failed to save cache index");
     return;
   }
-  
+
   StaticJsonDocument<128> doc;
   doc["currentIndex"] = currentCacheIndex;
   doc["count"] = cachedPhotoCount;
-  
+
   serializeJson(doc, f);
   f.close();
 }
@@ -340,12 +355,12 @@ bool PhotoCacheService::initCache() {
   if (cacheInitialized) {
     return true;
   }
-  
+
   // NOTE: Do NOT use IoGuard here - called functions acquire their own guards
   // Using IoGuard here would cause a deadlock with loadCacheIndex/loadCacheEntry
-  
+
   Serial.println("Initializing multi-image cache...");
-  
+
   // Create cache directory if it doesn't exist
   {
     IoGuard guard;
@@ -360,11 +375,11 @@ bool PhotoCacheService::initCache() {
       Serial.println("Created cache directory");
     }
   }
-  
+
   // Load cache index (currentCacheIndex and count) - has its own IoGuard
   loadCacheIndex();
   Serial.printf("Loaded cache index: count=%d, currentIndex=%d\n", cachedPhotoCount, currentCacheIndex);
-  
+
   // Scan and load existing cache entries - each loadCacheEntry has its own IoGuard
   uint8_t validCount = 0;
   for (uint8_t i = 0; i < CACHE_MAX_IMAGES; i++) {
@@ -376,42 +391,42 @@ bool PhotoCacheService::initCache() {
       Serial.printf("  Empty or invalid\n");
     }
   }
-  
+
   // Update cached photo count based on what we actually found
   cachedPhotoCount = validCount;
-  
+
   Serial.printf("Cache initialized with %d photos, current index: %d\n", cachedPhotoCount, currentCacheIndex);
-  
+
   cacheInitialized = true;
   return true;
 }
 
 bool PhotoCacheService::saveToCache(const PhotoInfo& photo, const char* imagePath) {
-  Serial.println("saveToCache: Starting...");
-  
+  CACHE_DEBUG_PRINTLN("saveToCache: Starting...");
+
   if (!cacheInitialized) {
-    Serial.println("saveToCache: Cache not initialized, initializing...");
+    CACHE_DEBUG_PRINTLN("saveToCache: Cache not initialized, initializing...");
     if (!initCache()) {
-      Serial.println("saveToCache: Failed to initialize cache");
+      CACHE_DEBUG_PRINTLN("saveToCache: Failed to initialize cache");
       return false;
     }
   }
-  
-  Serial.println("saveToCache: Acquiring IoGuard...");
+
+  CACHE_DEBUG_PRINTLN("saveToCache: Acquiring IoGuard...");
   IoGuard guard;
-  Serial.println("saveToCache: IoGuard acquired");
-  
+  CACHE_DEBUG_PRINTLN("saveToCache: IoGuard acquired");
+
   // Determine the next cache slot (circular buffer)
   uint8_t targetIndex = currentCacheIndex;
-  Serial.printf("saveToCache: Target slot %d\n", targetIndex);
-  
+  CACHE_DEBUG_PRINTF("saveToCache: Target slot %d\n", targetIndex);
+
   // Get file paths for the target slot
   String targetImagePath = getCacheImagePath(targetIndex);
   String targetMetaPath = getCacheMetaPath(targetIndex);
-  
+
   // If slot already contains a cached photo, remove old files
   if (cacheEntries[targetIndex].valid) {
-    Serial.printf("saveToCache: Evicting cache slot %d\n", targetIndex);
+    CACHE_DEBUG_PRINTF("saveToCache: Evicting cache slot %d\n", targetIndex);
     if (SD.exists(targetImagePath.c_str())) {
       SD.remove(targetImagePath.c_str());
     }
@@ -419,72 +434,72 @@ bool PhotoCacheService::saveToCache(const PhotoInfo& photo, const char* imagePat
       SD.remove(targetMetaPath.c_str());
     }
   }
-  
+
   // Copy image file to cache location
-  Serial.printf("saveToCache: Opening source file %s\n", imagePath);
+  CACHE_DEBUG_PRINTF("saveToCache: Opening source file %s\n", imagePath);
   File srcFile = SD.open(imagePath, FILE_READ);
   if (!srcFile) {
-    Serial.println("saveToCache: Failed to open source image");
+    CACHE_DEBUG_PRINTLN("saveToCache: Failed to open source image");
     return false;
   }
-  
+
   // Remove target if it somehow exists
   if (SD.exists(targetImagePath.c_str())) {
     SD.remove(targetImagePath.c_str());
   }
-  
-  Serial.printf("saveToCache: Creating target file %s\n", targetImagePath.c_str());
+
+  CACHE_DEBUG_PRINTF("saveToCache: Creating target file %s\n", targetImagePath.c_str());
   File dstFile = SD.open(targetImagePath.c_str(), FILE_WRITE);
   if (!dstFile) {
     srcFile.close();
-    Serial.println("saveToCache: Failed to create cache image file");
+    CACHE_DEBUG_PRINTLN("saveToCache: Failed to create cache image file");
     return false;
   }
-  
+
   // Copy in chunks and calculate CRC32 inline (avoid nested IoGuard)
-  Serial.println("saveToCache: Copying file and calculating CRC...");
+  CACHE_DEBUG_PRINTLN("saveToCache: Copying file and calculating CRC...");
   uint8_t buffer[512];
   uint32_t crc = 0xFFFFFFFF;
   size_t totalBytes = 0;
-  
+
   while (srcFile.available()) {
     size_t bytesRead = srcFile.read(buffer, sizeof(buffer));
     dstFile.write(buffer, bytesRead);
     totalBytes += bytesRead;
-    
+
     // Calculate CRC inline
     for (size_t i = 0; i < bytesRead; i++) {
       crc = (crc >> 8) ^ crc32Table[(crc ^ buffer[i]) & 0xFF];
     }
   }
   crc ^= 0xFFFFFFFF;
-  
+
   srcFile.close();
   dstFile.close();
-  Serial.printf("saveToCache: Copied %zu bytes, CRC: 0x%08X\n", totalBytes, crc);
-  
+  CACHE_DEBUG_PRINTF("saveToCache: Copied %zu bytes, CRC: 0x%08X\n", totalBytes, crc);
+
   // Update cache entry
   CacheEntry& entry = cacheEntries[targetIndex];
   entry.photoInfo = photo;
   entry.localFilePath = targetImagePath;
   entry.metaFilePath = targetMetaPath;
-  entry.cachedTimestamp = millis();
+  entry.cachedTimestamp = currentEpochSeconds();
   entry.accessCount = 1;
   entry.crc32 = crc;
   entry.valid = true;
-  
+
   // Save metadata JSON inline (avoid nested IoGuard from saveCacheEntry)
-  Serial.println("saveToCache: Saving metadata JSON...");
+  CACHE_DEBUG_PRINTLN("saveToCache: Saving metadata JSON...");
   if (SD.exists(targetMetaPath.c_str())) {
     SD.remove(targetMetaPath.c_str());
   }
-  
+
   File metaFile = SD.open(targetMetaPath.c_str(), FILE_WRITE);
   if (!metaFile) {
-    Serial.println("saveToCache: Failed to create metadata file");
+    CACHE_DEBUG_PRINTLN("saveToCache: Failed to create metadata file");
     return false;
   }
-  
+
   StaticJsonDocument<512> doc;
   doc["title"] = entry.photoInfo.title;
   doc["url"] = entry.photoInfo.url;
@@ -492,25 +507,25 @@ bool PhotoCacheService::saveToCache(const PhotoInfo& photo, const char* imagePat
   doc["timestamp"] = entry.cachedTimestamp;
   doc["accessCount"] = entry.accessCount;
   doc["crc32"] = entry.crc32;
-  
+
   serializeJson(doc, metaFile);
   metaFile.close();
-  Serial.println("saveToCache: Metadata saved");
-  
+  CACHE_DEBUG_PRINTLN("saveToCache: Metadata saved");
+
   // Update circular buffer index
   currentCacheIndex = (targetIndex + 1) % CACHE_MAX_IMAGES;
-  
+
   // Update count (only if we added a new photo, not replaced)
   if (cachedPhotoCount < CACHE_MAX_IMAGES) {
     cachedPhotoCount++;
   }
-  
+
   // Save cache index inline (avoid nested IoGuard from saveCacheIndex)
-  Serial.println("saveToCache: Saving cache index...");
+  CACHE_DEBUG_PRINTLN("saveToCache: Saving cache index...");
   if (SD.exists(kCacheIndexFile)) {
     SD.remove(kCacheIndexFile);
   }
-  
+
   File indexFile = SD.open(kCacheIndexFile, FILE_WRITE);
   if (indexFile) {
     StaticJsonDocument<128> indexDoc;
@@ -519,10 +534,10 @@ bool PhotoCacheService::saveToCache(const PhotoInfo& photo, const char* imagePat
     serializeJson(indexDoc, indexFile);
     indexFile.close();
   }
-  
-  Serial.printf("saveToCache: SUCCESS - slot %d, count: %d, next index: %d\n", 
-                targetIndex, cachedPhotoCount, currentCacheIndex);
-  
+
+  CACHE_DEBUG_PRINTF("saveToCache: SUCCESS - slot %d, count: %d, next index: %d\n",
+                   targetIndex, cachedPhotoCount, currentCacheIndex);
+
   return true;
 }
 
@@ -532,16 +547,16 @@ bool PhotoCacheService::getFromCache(uint8_t cacheIndex, PhotoInfo& outPhoto, St
       return false;
     }
   }
-  
+
   if (cacheIndex >= CACHE_MAX_IMAGES) {
     return false;
   }
-  
+
   const CacheEntry& entry = cacheEntries[cacheIndex];
   if (!entry.valid) {
     return false;
   }
-  
+
   // Check if file still exists (with proper locking)
   {
     IoGuard guard;
@@ -550,7 +565,7 @@ bool PhotoCacheService::getFromCache(uint8_t cacheIndex, PhotoInfo& outPhoto, St
       return false;
     }
   }
-  
+
   outPhoto = entry.photoInfo;
   outImagePath = entry.localFilePath;
   return true;
@@ -577,42 +592,42 @@ bool PhotoCacheService::validateCacheEntry(uint8_t cacheIndex) {
   if (cacheIndex >= CACHE_MAX_IMAGES) {
     return false;
   }
-  
+
   CacheEntry& entry = cacheEntries[cacheIndex];
   if (!entry.valid) {
     return false;
   }
-  
+
   IoGuard guard;
-  
+
   // Check if file exists
   if (!SD.exists(entry.localFilePath.c_str())) {
     Serial.printf("Cache entry %d: file missing\n", cacheIndex);
     entry.valid = false;
     return false;
   }
-  
+
   // Calculate CRC32 and compare (calculateCRC32 expects caller to hold guard)
   uint32_t currentCRC = calculateCRC32(entry.localFilePath.c_str());
   if (currentCRC != entry.crc32) {
-    Serial.printf("Cache entry %d: CRC mismatch (stored: 0x%08X, actual: 0x%08X)\n", 
+    Serial.printf("Cache entry %d: CRC mismatch (stored: 0x%08X, actual: 0x%08X)\n",
                   cacheIndex, entry.crc32, currentCRC);
     entry.valid = false;
     return false;
   }
-  
+
   return true;
 }
 
 void PhotoCacheService::purgeInvalidEntries() {
   IoGuard guard;
-  
+
   uint8_t purgedCount = 0;
-  
+
   for (uint8_t i = 0; i < CACHE_MAX_IMAGES; i++) {
     CacheEntry& entry = cacheEntries[i];
     if (!entry.valid) continue;
-    
+
     // Remove files for invalid entries
     if (!SD.exists(entry.localFilePath.c_str())) {
       entry.valid = false;
@@ -622,7 +637,7 @@ void PhotoCacheService::purgeInvalidEntries() {
       purgedCount++;
     }
   }
-  
+
   // Recount valid entries
   cachedPhotoCount = 0;
   for (uint8_t i = 0; i < CACHE_MAX_IMAGES; i++) {
@@ -630,7 +645,7 @@ void PhotoCacheService::purgeInvalidEntries() {
       cachedPhotoCount++;
     }
   }
-  
+
   if (purgedCount > 0) {
     Serial.printf("Purged %d invalid cache entries, %d remaining\n", purgedCount, cachedPhotoCount);
     saveCacheIndex();
@@ -641,22 +656,22 @@ const CacheEntry* PhotoCacheService::getCacheEntry(uint8_t cacheIndex) {
   if (cacheIndex >= CACHE_MAX_IMAGES) {
     return nullptr;
   }
-  
+
   if (!cacheEntries[cacheIndex].valid) {
     return nullptr;
   }
-  
+
   return &cacheEntries[cacheIndex];
 }
 
 void PhotoCacheService::recordAccess(uint8_t cacheIndex) {
   if (cacheIndex >= CACHE_MAX_IMAGES) return;
-  
+
   CacheEntry& entry = cacheEntries[cacheIndex];
   if (!entry.valid) return;
-  
+
   entry.accessCount++;
-  
+
   // Save updated metadata periodically (every 5 accesses)
   if (entry.accessCount % 5 == 0) {
     saveCacheEntry(cacheIndex);
@@ -672,27 +687,27 @@ bool PhotoCacheService::hasOfflineContent() {
 
 void PhotoCacheService::runMaintenance(uint32_t maxTimeMs) {
   if (!cacheInitialized) return;
-  
+
   uint32_t startTime = millis();
   uint8_t entriesChecked = 0;
   uint8_t entriesInvalidated = 0;
-  
+
   Serial.println("Running cache maintenance...");
-  
+
   // Simple validation: just check file existence (skip CRC for speed during maintenance)
   IoGuard guard;
-  
+
   for (uint8_t i = 0; i < CACHE_MAX_IMAGES && (millis() - startTime) < maxTimeMs; i++) {
     if (!cacheEntries[i].valid) continue;
-    
+
     entriesChecked++;
-    
+
     // Check if file exists
     if (!SD.exists(cacheEntries[i].localFilePath.c_str())) {
       Serial.printf("Cache entry %d: file missing, invalidating\n", i);
       cacheEntries[i].valid = false;
       entriesInvalidated++;
-      
+
       // Remove metadata file if it exists
       String metaPath = getCacheMetaPath(i);
       if (SD.exists(metaPath.c_str())) {
@@ -700,7 +715,7 @@ void PhotoCacheService::runMaintenance(uint32_t maxTimeMs) {
       }
     }
   }
-  
+
   // Update cached count if entries were invalidated
   if (entriesInvalidated > 0) {
     cachedPhotoCount = 0;
@@ -709,12 +724,12 @@ void PhotoCacheService::runMaintenance(uint32_t maxTimeMs) {
         cachedPhotoCount++;
       }
     }
-    
+
     // Save cache index inline (avoid calling saveCacheIndex which has its own guard)
     if (SD.exists(kCacheIndexFile)) {
       SD.remove(kCacheIndexFile);
     }
-    
+
     File indexFile = SD.open(kCacheIndexFile, FILE_WRITE);
     if (indexFile) {
       StaticJsonDocument<128> indexDoc;
@@ -724,7 +739,7 @@ void PhotoCacheService::runMaintenance(uint32_t maxTimeMs) {
       indexFile.close();
     }
   }
-  
+
   Serial.printf("Maintenance complete: checked %d, invalidated %d, valid count: %d\n",
                 entriesChecked, entriesInvalidated, cachedPhotoCount);
 }

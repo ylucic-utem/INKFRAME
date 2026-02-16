@@ -9,19 +9,15 @@
 
 ## Step 1: Configure WiFi
 
-Edit `src/main.cpp` and find these lines (around line 13):
+Copy `include/config.local.h.example` to `include/config.local.h` and set your credentials:
 
 ```cpp
-const char* SSID = "YOUR_SSID";
-const char* PASSWORD = "YOUR_PASSWORD";
+#define WIFI_SSID "YOUR_SSID"
+#define WIFI_PASSWORD "YOUR_PASSWORD"
 ```
 
-Replace with your actual WiFi credentials:
+`config.local.h` is git-ignored and loaded by `include/config.h`.
 
-```cpp
-const char* SSID = "MyHomeNetwork";
-const char* PASSWORD = "MyPassword123";
-```
 
 ## Step 2: Build the Project
 
@@ -29,7 +25,7 @@ Open the terminal in VS Code and run:
 
 ```bash
 # Build for M5Stack PaperS3
-pio run -e m5stack-papers3
+pio run -e PaperS3
 ```
 
 ## Step 3: Upload to Device
@@ -38,7 +34,7 @@ pio run -e m5stack-papers3
 2. Run:
 
 ```bash
-pio run -e m5stack-papers3 -t upload
+pio run -e PaperS3 -t upload
 ```
 
 3. Wait for the upload to complete (usually 30-60 seconds)
@@ -46,7 +42,7 @@ pio run -e m5stack-papers3 -t upload
 ## Step 4: Monitor Serial Output
 
 ```bash
-pio run -e m5stack-papers3 -t monitor
+pio run -e PaperS3 -t monitor
 ```
 
 You should see:

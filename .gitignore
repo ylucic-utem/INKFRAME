@@ -45,3 +45,6 @@ Thumbs.db
 
 # Dependency directories
 lib/
+
+# Local secrets
+include/config.local.h

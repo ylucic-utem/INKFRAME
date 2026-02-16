@@ -66,10 +66,6 @@ private:
   uint32_t getRetryDelay(HttpStatusCategory category, int retryAttempt, HTTPClient& client);
   String getHttpErrorMessage(int httpCode);
 
-  // Connection reuse
-  bool tryReuseConnection();
-  void saveConnectionForReuse();
-
   // Logging
   void logRequestStart();
   void logRequestEnd(bool success, const String& error = "");
@@ -85,11 +81,6 @@ private:
   volatile bool _cancelRequested;
   uint32_t _lastRequestStartTime;
   uint8_t _currentRetryCount;
-
-  // Connection reuse
-  HTTPClient* _reusableClient;
-  String _lastHost;
-  bool _hasReusableConnection;
 
   // Request metadata for telemetry
   RequestMetadata _lastMetadata;

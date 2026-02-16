@@ -1,0 +1,7 @@
+#pragma once
+
+// Copy this file to `include/config.local.h` and set your real credentials.
+// `config.local.h` is git-ignored and loaded by `include/config.h` when present.
+
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
